@@ -63,22 +63,35 @@ if st.button("Fetch video from URL", type="primary"):
     workdir = Path(tempfile.mkdtemp(prefix="clipforge_"))
     output_template = str(workdir / "source.%(ext)s")
     options = {
-        "format": "bestvideo*+bestaudio/best",
+        # Prefer a single-file MP4 when available; otherwise let yt-dlp choose
+        # the best available single-file format to avoid empty merge outputs.
+        "format": "best[ext=mp4]/best",
         "outtmpl": output_template,
-        "merge_output_format": "mp4",
         "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+        "no_warnings": False,
         "max_filesize": 800 * 1024 * 1024,
+        "retries": 3,
+        "fragment_retries": 3,
+        "continuedl": True,
     }
     try:
         with st.spinner("Fetching video… this may take a few minutes."):
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(video_url.strip(), download=True)
-            candidates = [p for p in workdir.iterdir() if p.is_file() and p.name.startswith("source.")]
+            candidates = [
+                p for p in workdir.iterdir()
+                if p.is_file() and p.name.startswith("source.") and p.stat().st_size > 0
+            ]
             if not candidates:
-                raise RuntimeError("Downloaded video file was not found.")
-            source_path = candidates[0]
+                found = [f"{p.name} ({p.stat().st_size} bytes)" for p in workdir.iterdir() if p.is_file()]
+                details = ", ".join(found) if found else "no output file was created"
+                raise RuntimeError(
+                    "yt-dlp did not produce a non-empty video file. "
+                    f"Output: {details}. Try a different public video you own or have permission to edit. "
+                    "Some YouTube videos cannot be fetched from hosted servers."
+                )
+            source_path = max(candidates, key=lambda p: p.stat().st_size)
             st.session_state["clipforge_source_path"] = str(source_path)
             st.session_state["clipforge_workdir"] = str(workdir)
             st.session_state["clipforge_video_title"] = info.get("title", "Video")
@@ -87,6 +100,11 @@ if st.button("Fetch video from URL", type="primary"):
             st.session_state.pop("rendered_clips", None)
     except Exception as exc:
         st.error(f"Could not fetch this video: {exc}")
+        st.info(
+            "If this repeats, the video may be blocked from server-side downloading. "
+            "Try a different public video you own or have permission to edit; private, age-restricted, "
+            "or otherwise restricted videos may not work."
+        )
         st.stop()
 
 source_value = st.session_state.get("clipforge_source_path")
