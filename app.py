@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import streamlit as st
+import yt_dlp
 
 st.set_page_config(page_title="ClipForge AI", page_icon="🎬", layout="centered")
 
@@ -11,8 +12,7 @@ st.title("🎬 ClipForge AI")
 st.caption("Long video → Shorts | MVP · Review before download")
 
 st.info(
-    "This starter version creates clips from your own uploaded videos. "
-    "Automatic mode suggests evenly spaced 30–60 second sections; it does not yet use semantic AI to understand the story."
+    "Paste a video URL you own or have permission to edit. Automatic mode suggests evenly spaced 30–60 second sections; it does not yet use semantic AI to understand the story."
 )
 
 def ffmpeg_available():
@@ -50,30 +50,61 @@ if not ffmpeg_available():
     st.error("FFmpeg is not installed. See README.md for setup instructions.")
     st.stop()
 
-uploaded = st.file_uploader("Upload your own long video", type=["mp4", "mov", "mkv", "webm"])
-if not uploaded:
+video_url = st.text_input(
+    "Paste YouTube video URL",
+    placeholder="https://www.youtube.com/watch?v=...",
+    help="Use a public video you own or have permission to edit. Some videos may not be downloadable due to platform restrictions."
+)
+
+if st.button("Fetch video from URL", type="primary"):
+    if not video_url.strip().startswith(("https://www.youtube.com/", "https://youtu.be/")):
+        st.error("Please enter a valid YouTube video URL (youtube.com or youtu.be).")
+        st.stop()
+    workdir = Path(tempfile.mkdtemp(prefix="clipforge_"))
+    output_template = str(workdir / "source.%(ext)s")
+    options = {
+        "format": "bestvideo*+bestaudio/best",
+        "outtmpl": output_template,
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": 800 * 1024 * 1024,
+    }
+    try:
+        with st.spinner("Fetching video… this may take a few minutes."):
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(video_url.strip(), download=True)
+            candidates = [p for p in workdir.iterdir() if p.is_file() and p.name.startswith("source.")]
+            if not candidates:
+                raise RuntimeError("Downloaded video file was not found.")
+            source_path = candidates[0]
+            st.session_state["clipforge_source_path"] = str(source_path)
+            st.session_state["clipforge_workdir"] = str(workdir)
+            st.session_state["clipforge_video_title"] = info.get("title", "Video")
+            st.session_state.pop("auto_starts", None)
+            st.session_state.pop("manual_segments", None)
+            st.session_state.pop("rendered_clips", None)
+    except Exception as exc:
+        st.error(f"Could not fetch this video: {exc}")
+        st.stop()
+
+source_value = st.session_state.get("clipforge_source_path")
+if not source_value or not Path(source_value).exists():
     st.markdown("### How it works")
-    st.markdown("1. Upload a video you own or have permission to edit.\n2. Generate automatic suggestions or add timestamps manually.\n3. Preview each clip, then approve it for download.")
+    st.markdown("1. Paste a YouTube URL for a video you own or have permission to edit.\n2. Fetch the video.\n3. Generate clip suggestions, review them, and download approved clips.")
     st.stop()
 
-max_mb = 800
-if uploaded.size > max_mb * 1024 * 1024:
-    st.error(f"File is larger than this MVP's {max_mb} MB upload limit. Use a shorter/smaller file.")
-    st.stop()
-
-suffix = Path(uploaded.name).suffix or ".mp4"
-workdir = Path(tempfile.mkdtemp(prefix="clipforge_"))
-source_path = workdir / f"source{suffix}"
-source_path.write_bytes(uploaded.getvalue())
-
+source_path = Path(source_value)
+workdir = Path(st.session_state.get("clipforge_workdir", source_path.parent))
 try:
     duration = probe_duration(source_path)
 except Exception as exc:
     st.error(f"Could not read this video: {exc}")
     st.stop()
 
-st.success(f"Video loaded · {duration/60:.1f} minutes")
-st.video(uploaded)
+st.success(f"Video loaded: {st.session_state.get('clipforge_video_title', 'Video')} · {duration/60:.1f} minutes")
+st.video(str(source_path))
 
 st.subheader("1. Choose clip settings")
 clip_length = st.slider("Target clip length (seconds)", min_value=30, max_value=60, value=45, step=5)
@@ -172,4 +203,4 @@ if rendered:
             )
 
 st.divider()
-st.caption("Privacy: this prototype processes uploaded video in the environment where the app runs. Do not upload private or sensitive footage to a public deployment.")
+st.caption("Use only videos you own or have permission to edit. URL fetching may fail for age-restricted, private, or platform-blocked videos. Processing happens on the app host; do not use private or sensitive footage.")
