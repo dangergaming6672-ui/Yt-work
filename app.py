@@ -65,7 +65,7 @@ if st.button("Fetch video from URL", type="primary"):
     options = {
         # Prefer a single-file MP4 when available; otherwise let yt-dlp choose
         # the best available single-file format to avoid empty merge outputs.
-        "format": "best[ext=mp4]/best",
+      "format": "best",
         "outtmpl": output_template,
         "noplaylist": True,
         "quiet": False,
